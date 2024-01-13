@@ -1,6 +1,7 @@
 ﻿using Sandbox.Game.EntityComponents;
 using Sandbox.Game.GameSystems;
 using Sandbox.Game.Screens.Helpers.RadialMenuActions;
+using Sandbox.Game.Weapons.Guns;
 //using Sandbox.ModAPI;
 using Sandbox.ModAPI.Ingame;
 using Sandbox.ModAPI.Interfaces;
@@ -9,6 +10,8 @@ using SpaceEngineers.Game.ModAPI.Ingame;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics.Contracts;
+using System.Numerics;
 using System.Text;
 using System.Text.RegularExpressions;
 using VRage.Collections;
@@ -16,6 +19,7 @@ using VRage.Game;
 using VRage.Game.Components;
 using VRage.Game.ModAPI.Ingame;
 using VRage.Game.ObjectBuilders.Definitions;
+using VRage.Game.ObjectBuilders.Gui;
 using VRage.Scripting;
 using VRageMath;
 using VRageRender;
@@ -24,185 +28,377 @@ namespace SpaceEngineers
 {
     internal class Program : MyGridProgram
     {
-
-
-
         //INGAME_SCRIPT BEGIN
-        //
-        /*
-            How To Use:
-            ===========
-            Script is controlled by arguments.
-            call `myPowerplan` everything but blocks with [BPS] or [BPS:myPowerplan] will be turned off
-            call `revert:myPowerplan` and every block that was turned off for this powerplan will be turned on again
+        string HELP = @"Bacon Power Save - Help
+ Args:
+  p, plan plan_name 
+    name/id of the powerplan defined in CustomData
+    use * as plan_name to perform action on all plans (all activated plans + all plans configured in Custom Data)
+    required
+  a, activate 
+    enable powerplan; turn power off
+  d, deactivate
+    disable powerplan; turn power on
+  i, ignore blockname or type
+    dont turn on or off blocks with argument in name or type 
+    imnplicit: [plan_name]
 
-           Notes
-           =====
-           - Script only operates on same construct. (everyhing mechanically connected, but not connectors)
-           - On the PB's display it shows you what it has done.
-           - it wont turn itself off
-           - it ignores CryoChambers and Solarpanels
-        */
-        string revertCmdPrefix = "revert:";
-        Dictionary<string, List<long>> powerPlans = new Dictionary<string, List<long>>();
+
+Example:
+  turn off blocks but doors and jump drives:
+    'p example_plan i door i jumpdrive'
+
+plans can be stored in CustomData:
+    BaconPowerSave:plan_name:arguments
+
+Example: 
+    BaconPoserSave:flight_ready:i Thruster i Gyroscope i Cockpit 
+";
+        const string CONFIG_PREFIX = @"BaconPowerSave";
+        const string GLOBAL_TAG = "[BPS]";
+        const string MATCH_ALL_PLANS = "*";
+
+        Dictionary<string, List<string>> planCache = new Dictionary<string, List<string>>();
+
+
         public Program()
         {
             Runtime.UpdateFrequency = UpdateFrequency.None;
+
+            string[] data = this.Storage.Split(Environment.NewLine.ToCharArray());
+            foreach (string s in data) {
+                using (var argv = new ArgParse(s))
+                {
+                    if(argv.argv.Count < 2)
+                    {
+                        continue;
+                    }
+                    string plan = argv.argv[0];
+                    if(planCache.ContainsKey(plan))
+                    {
+                        continue;
+                    }
+                    planCache[plan] = new List<string>();
+                    for (int i=0; i<argv.argv.Count; i++)
+                    {
+                        planCache[plan].Add(argv.argv[i]);
+                    }
+                }
+            }
         }
 
         public void Save()
-
         {
-
+            StringBuilder sb = new StringBuilder();
+            foreach(var key in planCache.Keys)
+            {
+                string data = $"\"{key}\" ";
+                var idList = planCache[key];
+                foreach(var id in idList)
+                {
+                    data += $" \"{id}\" ";
+                }
+                sb.AppendLine(data);
+            }
+            this.Storage = sb.ToString();
         }
 
         //argument: name off powersave group
         public void Main(string argument, UpdateType updateType)
         {
-            
-            try
-            {
-                if (argument.Length > 0)
-                {
-                    loadPlans();
-                    if (argument.StartsWith(revertCmdPrefix))
-                    {
-                        Echo("REVERT > " + argument);
-                        revertPlan(argument.Substring(revertCmdPrefix.Length));
-                    } else {
-                        Echo("APPLY > " + argument);
-                        applyPlan(argument);
-                    }
-                    savePlans();
-                }
-                else
-                {
-
-                }
-            } catch (Exception e)
-            {
-                Echo(e.Message);
-            }
-            
-        }
-        private void applyPlan(string planName)
-        {
-            Echo($"apply:`{planName}`");
-            if (!powerPlans.ContainsKey(planName))
-            {
-                powerPlans.Add(planName, new List<long>());
-            }
-
-            List<string> log = new List<string>();
-            string planNameTag = @"[BPS:" + planName + @"]";
-            string globalNameTag = @"[BPS]";
-            List<IMyTerminalBlock> allBlocks = new List<IMyTerminalBlock>();
-            GridTerminalSystem.GetBlocks(allBlocks);
-            foreach (IMyTerminalBlock block in allBlocks)
-            {
-                if (
-                    !block.Equals(Me)
-                    && block.IsSameConstructAs(Me)
-                    && block.HasAction("OnOff_Off")
-                    && !block.CustomName.Contains(planNameTag)
-                    && !block.CustomName.Contains(globalNameTag)
-                    && block.GetValueBool("OnOff")
-                    && !(block is IMyCryoChamber)
-                    && !(block is IMySolarPanel)
-                )
-                {
-                    block.ApplyAction("OnOff_Off");
-                    powerPlans[planName].Add(block.EntityId);
-                    log.Add(block.CustomName);
-                }
-            }
-            writeToLcd($"[{DateTime.Now.ToString()}] applied `{planName}` blocks set to `Off`", log);
-        }
-        private void revertPlan(string planName)
-        {
-            List<string> log = new List<string>();
-            if (powerPlans.ContainsKey(planName))
-            {
-                foreach (long id in powerPlans[planName])
-                {
-                    IMyTerminalBlock block = GridTerminalSystem.GetBlockWithId(id);
-                    if (block != null)
-                    {
-                        block.ApplyAction("OnOff_On");
-                        log.Add(block.CustomName);
-                    }
-                }
-                powerPlans.Remove(planName);
-                writeToLcd($"[{DateTime.Now.ToString()}] reverted `{planName}` blocks set to `On`", log);
-            }
+            run(argument, updateType);
+            //Echo(HELP);
         }
 
-        private void loadPlans()
+        
+        public void run(string argument, UpdateType updateType)
         {
-            powerPlans.Clear();
-            foreach (string line in Me.CustomData.Split('\n', '\r')) {
-                if (!line.Contains(':'))
+            var args = new ArgParse(argument);
+            List<string> ignoreTags = new List<string>();
+            string plan = "";
+            if(!args.TryGetValOfOption("p", out plan) && !args.TryGetValOfOption("plan", out plan)){
+                Echo("Error: no plan name. #argument: 'p' or 'plan'");
+                return;
+            }
+
+            List<string> plans = new List<string>();
+
+            if (plan == MATCH_ALL_PLANS)
+            {
+                plans.AddRange(findAllPlans());
+            } 
+            plans.AddRange(args.getAllValOfOpt("plan", new string[]{ MATCH_ALL_PLANS }));
+            plans.AddRange(args.getAllValOfOpt("p", new string[] { MATCH_ALL_PLANS }));
+
+
+            Echo($"used plans ({plans.Count}): {string.Join(";", plans.ToArray())};");
+
+            bool activate = isActivate(args);
+            bool deactivate = isDeactivate(args);
+            Echo($"activate {activate}; deactivate: {deactivate}");
+
+            foreach (var _plan in plans)
+            {
+
+                if (deactivate)
                 {
+                    deactivatePlan(_plan);
                     continue;
                 }
-                string[] data = line.Split(':');
-                string name = data[0];
-                string[] blockIds = data[1].Split(';');
-                if (!powerPlans.ContainsKey(name))
+
+                if (activate)
                 {
-                    powerPlans.Add(name, new List<long>());
-                }
-                foreach(string id in blockIds)
-                {
-                    long matchId = 0;
-                    if(long.TryParse(id, out matchId))
+                    using (ArgParse planArgs = new ArgParse(getPlanArgs(_plan)))
                     {
-                        powerPlans[name].Add(matchId);
+                        ignoreTags.AddList(args.getAllValOfOpt("i"));
+                        ignoreTags.AddList(args.getAllValOfOpt("ignore"));
+                        ignoreTags.AddList(planArgs.getAllValOfOpt("i"));
+                        ignoreTags.AddList(planArgs.getAllValOfOpt("ignore"));
+                        ignoreTags.Add($"[{_plan}]");
+                        ignoreTags.Add(GLOBAL_TAG);
+                    }
+                    activatePlan(_plan, ignoreTags);
+                    continue;
+                }
+            }
+
+        }
+
+        public List<string> findAllPlans()
+        {
+            List<string> buff = new List<string>();
+            foreach (var key in planCache.Keys)
+            {
+                buff.Add(key);
+            }
+
+            string[] data = Me.CustomData.Split(Environment.NewLine.ToCharArray());
+            foreach (string s in data)
+            {
+                string planprefix = $"{CONFIG_PREFIX}:";
+                if (s.StartsWith(planprefix))
+                {
+                    int start = s.IndexOf(':');
+                    int length = s.IndexOf(':', start+1) - start;
+                    string planname = s.Substring(start, length);
+                    buff.Add(planname);
+                }
+            }
+            
+            return buff;
+        }
+
+        private bool isActivate(ArgParse arg)
+        {
+            return (arg.Contains("a") || arg.Contains("activate"));
+        }
+
+        private bool isDeactivate(ArgParse arg)
+        {
+            return (arg.Contains("d") || arg.Contains("deactivate"));
+        }
+
+        public void activatePlan(string plan, List<string> ignoreTags)
+        {
+            if (!planCache.ContainsKey(plan))
+            {
+                planCache[plan] = new List<string>();
+            }
+            var blocks = findBlocksToTurnOff(ignoreTags.ToArray());
+            foreach (var block in blocks)
+            {
+                string id = block.EntityId.ToString();
+                block.ApplyAction("OnOff_Off");
+                planCache[plan].Add(id);
+            }
+            Echo($"{plan}: turned off {blocks.Count} blocks");
+        }
+
+        public void deactivatePlan(string plan)
+        {
+            if (!planCache.ContainsKey(plan))
+            {
+                return;
+            }
+            foreach(string id in planCache[plan])
+            {
+                long blockId = long.Parse(id);
+                IMyTerminalBlock block = GridTerminalSystem.GetBlockWithId(blockId);
+                block.ApplyAction("OnOff_On");
+            }
+            Echo($"{plan}: turned on {planCache[plan].Count} blocks");
+            planCache[plan].Clear();
+            planCache.Remove(plan);
+        }
+
+        public List<IMyTerminalBlock> findBlocksToTurnOff(string[] ignoreTags)
+        {
+            List<IMyTerminalBlock> blocks = new List<IMyTerminalBlock>();
+            GridTerminalSystem.GetBlocksOfType<IMyTerminalBlock>(blocks, b => {
+                return
+                    !b.Equals(Me)
+                    && b.IsSameConstructAs(Me)
+                    && b.IsWorking
+                    && b.HasAction("OnOff_Off")
+                    && b.GetValueBool("OnOff")
+                    && !(b is IMyCryoChamber)
+                    && !(b is IMySolarPanel)
+                    && !(b is IMyBatteryBlock)
+                    && !(b is IMyPowerProducer)
+                    && !StringContainsAnyOf(b.CustomName, ignoreTags)
+                    && !StringContainsAnyOf(b.BlockDefinition.SubtypeName, ignoreTags)
+                ;
+            });
+            return blocks;
+        }
+
+
+        public bool StringContainsAnyOf(string text, string[] tags)
+        {
+            for(int i=0; i<tags.Length; i++)
+            {
+                if (text.Contains(tags[i]))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private string getPlanArgs(string _plan)
+        {
+            string[] data = Me.CustomData.Split(Environment.NewLine.ToCharArray());
+            foreach(string s in data)
+            {
+                string planprefix = $"{CONFIG_PREFIX}:{_plan}:";
+                if (s.StartsWith(planprefix))
+                {
+                    return s.Substring(planprefix.Length);
+                }
+            }
+            return "";
+        }
+
+        //LIB.Args
+        internal class ArgParse : IDisposable
+        {
+            public List<string> argv;
+            public ArgParse(string arguments)
+            {
+                argv = parse(arguments);
+            }
+
+            public bool Contains(string _arg)
+            {
+                return argv.Contains(_arg);
+            }
+
+            public void Dispose()
+            {
+                argv.Clear();
+            }
+            //, Array.Empty<string>()
+            public List<string> getAllValOfOpt(string _option) => getAllValOfOpt(_option, Array.Empty<string>());
+            public List<string> getAllValOfOpt(string _option, string[] excludeValues)
+            {
+                List<string> _tmp = new List<string>();
+                int c = 0;
+                string _value = "";
+                while (TryGetValOfOption(_option, out _value, c++))
+                {
+                    if (!excludeValues.Contains(_value)) { 
+                        _tmp.Add(_value);
                     }
                 }
+                return _tmp;
             }
-        }
-
-        private void savePlans()
-        {
-            StringBuilder customData = new StringBuilder();
-            foreach(string name in powerPlans.Keys)
+            public bool TryGetValOfOption(string _option, out string _val, int number = 0)
             {
-                customData.AppendLine($"{name}:{string.Join(";", (powerPlans[name].ConvertAll<string>(x => x.ToString())))}");
-            }
-            Me.CustomData = customData.ToString();
-        }
+                _val = "";
 
-        private void writeToLcd(string line, List<string> parameters)
-        {
-            IMyTextSurface lcd = Me.GetSurface(0);
-            string content = "";
-            float width = lcd.SurfaceSize.X;
-            string wipLine = "";
-            foreach(string s in parameters)
-            {
-                string newLine = $"{wipLine} `{s}`";
-                if(lcd.MeasureStringInPixels(new StringBuilder(newLine), lcd.Font, lcd.FontSize).X < width)
+                int index = -1;
+                for (int i=0; i <= number; i++)
                 {
-                    wipLine = newLine;
-                } else
-                {
-                    content += wipLine + " \\\n";
-                    wipLine = "";
+                    index = argv.IndexOf(_option, index+1);
+                    if(index == -1)
+                    {
+                        return false;
+                    }
                 }
+                                
+                if (index >= 0 && index+1 < argv.Count)
+                {
+                    _val = argv[index+1];
+                    return true;
+                }
+                return false;
             }
-                        
-            content = '\n' + line + "\\\n" + content + lcd.GetText();
-            
-            if(content.Length > 100000)
-            {
-                content = content.Substring(0, 100000);
-            }
-            lcd.WriteText(content);
-            lcd.ContentType = VRage.Game.GUI.TextPanel.ContentType.TEXT_AND_IMAGE;
-        }
 
-   
+            private List<string> parse(string arguments)
+            {
+                bool isEscaped = false;
+                bool isString = false;
+                char c_escape = '\\';
+                char c_string = '"';
+                char c_split = ' ';
+
+                List<string> argv = new List<string>();
+                string argTmp = "";
+
+                for(int i=0;i<arguments.Length; i++)
+                {
+                    char glyph = arguments[i];
+                    if(isEscaped)
+                    {
+                        isEscaped = false;
+                        argTmp += glyph;
+                        continue;
+                    }
+
+                    if (glyph == c_escape)
+                    {
+                        isEscaped = true;
+                        continue;
+                    }
+
+                    if (glyph == c_string)
+                    {
+                        if (isString)
+                        {
+                            isString = false;
+                        }
+                        else
+                        {
+                            isString = true;
+                        }
+                        continue;
+                    }
+
+                    if (isString)
+                    {
+                        argTmp += glyph;
+                        continue;
+                    }                   
+
+                    if(glyph == c_split)
+                    {
+                        if (argTmp.Length > 0)
+                        {
+                            argv.Add(argTmp);
+                            argTmp = "";
+                        }
+                        continue;
+                    }
+
+                    argTmp += glyph;
+                }
+                if (argTmp.Length > 0)
+                {
+                    argv.Add(argTmp);
+                }
+                return argv;
+            }
+        }
         //INGAME_SCRIPT END
     }
 }
