@@ -42,6 +42,11 @@ namespace SpaceEngineers
   i, ignore blockname or type
     dont turn on or off blocks with argument in name or type 
     imnplicit: [plan_name]
+  ls, list plans 
+  ls -l, list plans with block ids
+  help, show help
+  clearcache true, clear plan cache
+    
 
 
 Example:
@@ -64,22 +69,30 @@ Example:
         public Program()
         {
             Runtime.UpdateFrequency = UpdateFrequency.None;
+            Load();
+            
+        }
 
+        void Load()
+        {
             string[] data = this.Storage.Split(Environment.NewLine.ToCharArray());
-            foreach (string s in data) {
+            Echo($"Program:{Storage}:Program");
+            foreach (string s in data)
+            {
+                Echo($"s:{s}:s");
                 using (var argv = new ArgParse(s))
                 {
-                    if(argv.argv.Count < 2)
+                    if (argv.argv.Count < 2)
                     {
                         continue;
                     }
                     string plan = argv.argv[0];
-                    if(planCache.ContainsKey(plan))
+                    if (planCache.ContainsKey(plan))
                     {
                         continue;
                     }
                     planCache[plan] = new List<string>();
-                    for (int i=0; i<argv.argv.Count; i++)
+                    for (int i = 0; i < argv.argv.Count; i++)
                     {
                         planCache[plan].Add(argv.argv[i]);
                     }
@@ -100,6 +113,7 @@ Example:
                 }
                 sb.AppendLine(data);
             }
+            Echo($"SAVE:{sb.ToString()}:SAVE");
             this.Storage = sb.ToString();
         }
 
@@ -114,6 +128,25 @@ Example:
         public void run(string argument, UpdateType updateType)
         {
             var args = new ArgParse(argument);
+            if (args.Contains("ls"))
+            {
+                PrintPlans(args);
+                return;
+            }
+            if (args.Contains("help"))
+            {
+                Echo(HELP);
+                return;
+            }
+            if(args.Contains("clearcache")) {
+                string _a;
+                if(args.TryGetValOfOption("clearcache", out _a) && _a == "true")
+                {
+                    ClearPlanCahe();
+                    return;
+                }
+            }
+
             List<string> ignoreTags = new List<string>();
             string plan = "";
             if(!args.TryGetValOfOption("p", out plan) && !args.TryGetValOfOption("plan", out plan)){
@@ -162,6 +195,34 @@ Example:
                 }
             }
 
+        }
+
+        void ClearPlanCahe()
+        {
+            planCache.Clear();
+            Storage = "";
+            Save();
+            Load();
+        }
+
+        void PrintPlans(ArgParse args)
+        {
+            string opt;
+            args.TryGetValOfOption("ls", out opt);
+
+            bool ll = (opt == "-l");
+
+            foreach(var k in planCache.Keys)
+            {
+                Echo($"{k} {planCache[k].Count} Blocks");
+                if (ll)
+                {
+                    foreach (var _block in planCache[k])
+                    {
+                        Echo($"....{_block}");
+                    }
+                }
+            }
         }
 
         public List<string> findAllPlans()
@@ -222,7 +283,10 @@ Example:
             }
             foreach(string id in planCache[plan])
             {
-                long blockId = long.Parse(id);
+                long blockId;
+                if (!long.TryParse(id, out blockId)) {
+                    Echo($"Error: can't parse ID <{id}>");
+                }
                 IMyTerminalBlock block = GridTerminalSystem.GetBlockWithId(blockId);
                 block.ApplyAction("OnOff_On");
             }
